@@ -160,6 +160,8 @@ class MarkdownToLarkConverter:
                     col_count = len(current_row_cells)
                 
                 # Build Row Block with Children (Cells)
+                # Note: We will attach this to the Table block for post-processing, 
+                # but we won't send it in the initial create call.
                 row_block = Block.builder().block_type(32).children(current_row_cells).build()
                 
                 rows.append(row_block)
@@ -179,6 +181,16 @@ class MarkdownToLarkConverter:
                 # Create Cell Block
                 # Cell contains Text Block (Paragraph)
                 text_block = self._create_text_block(content_elements)
+                
+                # IMPORTANT: Try to add `table_cell` attribute again, but as an object.
+                # Previous error: `Invalid parameter type in json: children` for ROW.
+                # This means the ROW's children (CELLS) are invalid.
+                # A Cell (33) MUST be valid.
+                
+                # Maybe the issue is that we are using `children([text_block])`?
+                # Does Cell support children in creation? Yes.
+                
+                # Let's try adding `table_cell` property back. It might be required even if empty.
                 cell_block = Block.builder().block_type(33).table_cell(
                     TableCell.builder().build()
                 ).children([text_block]).build()
@@ -193,9 +205,12 @@ class MarkdownToLarkConverter:
             
         table_block = Block.builder().block_type(31).table(
             Table.builder()
-                .property(TableProperty.builder().column_size(col_count).build())
+                .property(TableProperty.builder().column_size(col_count).row_size(len(rows)).build())
                 .build()
-        ).children(rows).build()
+        ).build()
+        
+        # Attach rows to the table block for post-processing in main.py
+        table_block._table_content_rows = rows
         
         return table_block, i
 

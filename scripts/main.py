@@ -99,12 +99,39 @@ def main():
             # Create blocks in the document
             # We append to the root block (which is the document itself, so parent_id = obj_token)
             print("Uploading blocks to Lark...")
-            # Note: We should probably batch this if there are too many blocks, but for now sending all at once.
-            # API limit might apply.
             
-            # Create blocks
-            created_blocks = client.create_blocks(obj_token, obj_token, lark_blocks)
-            print(f"Successfully created {len(created_blocks)} blocks in document '{title}'.")
+            # Iterate through blocks to handle special cases like Tables
+            # We process blocks sequentially or in batches, but if we encounter a Table, we must handle it separately.
+            
+            blocks_to_create = []
+            
+            for block in lark_blocks:
+                # Check if it's a table that needs special handling
+                if hasattr(block, '_table_content_rows'):
+                    # If we have accumulated blocks, create them first
+                    if blocks_to_create:
+                        client.create_blocks(obj_token, obj_token, blocks_to_create)
+                        blocks_to_create = []
+                        
+                    # Now handle the table
+                    print("Creating Table...")
+                    content_rows = block._table_content_rows
+                    
+                    # Clone the block to avoid modifying the original if needed, or just use it.
+                    # But we need to remove the attribute from the object passed to SDK?
+                    # SDK uses json.dumps which ignores underscores usually, but `_table_content_rows` is an attribute.
+                    # Safest is to remove it.
+                    del block._table_content_rows
+                    
+                    client.create_table(obj_token, obj_token, block, content_rows)
+                else:
+                    blocks_to_create.append(block)
+            
+            # Create remaining blocks
+            if blocks_to_create:
+                client.create_blocks(obj_token, obj_token, blocks_to_create)
+
+            print(f"Successfully uploaded blocks to document '{title}'.")
             
             # Check if any mermaid blocks were likely added
             has_mermaid = any(b.block_type == 40 for b in lark_blocks)

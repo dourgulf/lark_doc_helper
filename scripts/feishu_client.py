@@ -219,3 +219,66 @@ class FeishuClient:
             time.sleep(0.1)
             
         return all_created_children
+
+    def create_table(self, document_id, parent_id, table_block, content_rows):
+        """
+        Creates a table and then populates it with content.
+        This is a workaround because creating a deep table structure (Table->Rows->Cells->Content)
+        in a single call fails with validation errors.
+        """
+        # 1. Create the table frame (without children, but with row_size/col_size)
+        # We assume table_block already has children removed or we remove them here just in case.
+        # But table_block is a Block object.
+        
+        # We need to make sure we don't send children.
+        # But SDK Block object doesn't have a way to unset children easily if built?
+        # Actually, we modified markdown_to_lark.py to NOT add children.
+        
+        # Create the table block
+        created_blocks = self.create_blocks(document_id, parent_id, [table_block])
+        if not created_blocks:
+            raise Exception("Failed to create table block")
+            
+        created_table = created_blocks[0]
+        table_id = created_table.block_id
+        
+        print(f"Created Table {table_id}. Now populating content...")
+        
+        # 2. Fetch the created structure (Rows and Cells)
+        # We need to get the rows first.
+        rows = self._fetch_block_children(document_id, table_id)
+        
+        # Strategy: Flatten both source content and target structure to match cells linearly.
+        # This handles cases where Lark API creates a different structure (e.g. 8x1 instead of 4x2)
+        # but total cell count is consistent.
+        
+        # Flatten target cells
+        all_target_cells = []
+        for row in rows:
+            # Fetch cells for this row
+            cells = self._fetch_block_children(document_id, row.block_id)
+            all_target_cells.extend(cells)
+            
+        # Flatten source content cells
+        all_content_cells = []
+        for content_row in content_rows:
+            all_content_cells.extend(content_row.children)
+            
+        print(f"Table Population: Found {len(all_target_cells)} target cells and {len(all_content_cells)} content cells.")
+        
+        if len(all_target_cells) != len(all_content_cells):
+             print(f"Warning: Cell count mismatch! Target: {len(all_target_cells)}, Content: {len(all_content_cells)}")
+        
+        # Fill cells
+        for i, target_cell in enumerate(all_target_cells):
+            if i >= len(all_content_cells):
+                break
+            
+            content_cell = all_content_cells[i]
+            cell_content_blocks = content_cell.children
+            
+            if cell_content_blocks:
+                 # Insert content into the cell
+                 self.create_blocks(document_id, target_cell.block_id, cell_content_blocks)
+                    
+        return created_blocks
