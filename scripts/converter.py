@@ -1,5 +1,4 @@
 import json
-from lark_oapi.api.docx.v1.model import Block, Text, TextRun, MentionUser, MentionDoc
 
 class MarkdownConverter:
     def __init__(self, blocks, image_handler=None):
@@ -223,9 +222,9 @@ class MarkdownConverter:
                          record_data = json.loads(record_json)
                          # Mermaid code is usually in 'data' field
                          mermaid_code = record_data.get('data', '').strip()
-                        if mermaid_code:
-                            # Some cleaning might be needed (e.g., unicode escapes are handled by json.loads)
-                            content = f"```mermaid\n{mermaid_code}\n```"
+                         if mermaid_code:
+                             # Some cleaning might be needed (e.g., unicode escapes are handled by json.loads)
+                             content = f"```mermaid\n{mermaid_code}\n```"
                      except json.JSONDecodeError:
                          # print(f"Warning: Failed to parse AddOn record JSON for block {block.block_id}")
                          pass
