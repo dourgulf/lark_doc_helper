@@ -382,14 +382,10 @@ class FeishuClient:
                  try:
                      self.create_blocks(document_id, target_cell.block_id, cell_content_blocks)
                      
-                     # Delete the default empty block (index 0) only if creation succeeded
-                     # Add retry/error handling for deletion, as it might fail if network is flaky
-                     try:
-                        success = self.delete_block_children(document_id, target_cell.block_id, 0, 1)
-                        if not success:
-                            print(f"    Failed to delete default block in cell {target_cell.block_id}")
-                     except Exception as e:
-                        print(f"    Exception deleting default block: {e}")
+                     # Delete the default empty block logic REMOVED to prevent content loss.
+                     # Previous attempts to delete the default block caused content to disappear or instability.
+                     # We prioritize content visibility over extra spacing for now.
+                     
                  except Exception as e:
                      print(f"    Failed to fill cell {target_cell.block_id}: {e}")
                  
