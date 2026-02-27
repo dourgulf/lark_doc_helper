@@ -2,7 +2,7 @@ import os
 import time
 import lark_oapi as lark
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
-from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest, BatchDeleteDocumentBlockChildrenRequest
+from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest, BatchDeleteDocumentBlockChildrenRequest, PatchDocumentBlockRequest
 from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest
 
 class FeishuClient:
@@ -378,24 +378,11 @@ class FeishuClient:
                  
                  print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
                  
-                 # Insert content into the cell
+                 # Insert content
                  try:
-                     self.create_blocks(document_id, target_cell.block_id, cell_content_blocks)
-                     
-                     # Delete the default empty block (index 0) only if creation succeeded
-                     # To avoid content loss (which happens if we delete too quickly), we add a small delay
-                     # and verify the content if possible, or just trust that after insertion (index -1),
-                     # the default block is at index 0.
-                     
-                     # We will try to delete again, but with a slight delay.
-                     # time.sleep(0.5) 
-                     
-                     # try:
-                     #    success = self.delete_block_children(document_id, target_cell.block_id, 0, 1)
-                     #    if not success:
-                     #        print(f"    Failed to delete default block in cell {target_cell.block_id}")
-                     # except Exception as e:
-                     #    print(f"    Exception deleting default block: {e}")
+                     # Try inserting at index 0 instead of appending (index -1)
+                     # This might push the default block down or help with layout?
+                     self.create_blocks(document_id, target_cell.block_id, cell_content_blocks, index=0)
                  except Exception as e:
                      print(f"    Failed to fill cell {target_cell.block_id}: {e}")
                  

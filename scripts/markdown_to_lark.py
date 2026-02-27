@@ -163,6 +163,9 @@ class MarkdownToLarkConverter:
                 # Note: We will attach this to the Table block for post-processing, 
                 # but we won't send it in the initial create call.
                 row_block = Block.builder().block_type(32).children(current_row_cells).build()
+                # Manually set table_row property since SDK might be missing TableRow class or builder support
+                # This is required for Type 32 blocks.
+                row_block.table_row = {}
                 
                 rows.append(row_block)
                 
