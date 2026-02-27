@@ -160,8 +160,11 @@ class MarkdownToLarkConverter:
                     col_count = len(current_row_cells)
                 
                 # Build Row Block with Children (Cells)
-                # We assume current_row_cells contains Type 2 Text Blocks which act as Cells.
+                # Note: We will attach this to the Table block for post-processing, 
+                # but we won't send it in the initial create call.
                 row_block = Block.builder().block_type(32).children(current_row_cells).build()
+                # Manually set table_row property since SDK might be missing TableRow class or builder support
+                # This is required for Type 32 blocks.
                 row_block.table_row = {}
                 
                 rows.append(row_block)
@@ -178,12 +181,24 @@ class MarkdownToLarkConverter:
                         break
                     j += 1
                 
-                # Create Cell Block using Type 2 (Text) directly
-                # This avoids the extra nesting of Type 33 -> Type 2 and the default empty block issue.
+                # Create Cell Block
+                # Cell contains Text Block (Paragraph)
                 text_block = self._create_text_block(content_elements)
                 
-                # We do NOT wrap it in Type 33.
-                current_row_cells.append(text_block)
+                # IMPORTANT: Try to add `table_cell` attribute again, but as an object.
+                # Previous error: `Invalid parameter type in json: children` for ROW.
+                # This means the ROW's children (CELLS) are invalid.
+                # A Cell (33) MUST be valid.
+                
+                # Maybe the issue is that we are using `children([text_block])`?
+                # Does Cell support children in creation? Yes.
+                
+                # Let's try adding `table_cell` property back. It might be required even if empty.
+                cell_block = Block.builder().block_type(33).table_cell(
+                    TableCell.builder().build()
+                ).children([text_block]).build()
+                
+                current_row_cells.append(cell_block)
                 
             i += 1
             

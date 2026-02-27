@@ -318,16 +318,17 @@ class FeishuClient:
 
     def create_table(self, document_id, parent_id, table_block, content_rows):
         """
-        Creates a table with content.
-        NEW STRATEGY:
-        1. Create an empty Table (Type 31).
-        2. Create Rows (Type 32) containing Text Blocks (Type 2) as cells.
-           This avoids the default empty block issue in Type 33 cells.
+        Creates a table and then populates it with content.
+        This is a workaround because creating a deep table structure (Table->Rows->Cells->Content)
+        in a single call fails with validation errors.
         """
+        # 1. Create the table frame (without children, but with row_size/col_size)
+        # We assume table_block already has children removed or we remove them here just in case.
+        # But table_block is a Block object.
         
-        # 1. Create the table block
-        # We assume table_block is Type 31 and has property set.
-        # We ensure it has NO children in the creation call to avoid "Invalid parameter type".
+        # We need to make sure we don't send children.
+        # But SDK Block object doesn't have a way to unset children easily if built?
+        # Actually, we modified markdown_to_lark.py to NOT add children.
         
         # Create the table block
         created_blocks = self.create_blocks(document_id, parent_id, [table_block])
@@ -337,34 +338,67 @@ class FeishuClient:
         created_table = created_blocks[0]
         table_id = created_table.block_id
         
-        print(f"Created Table {table_id}. Now creating {len(content_rows)} rows...")
+        print(f"Created Table {table_id}. Now populating content...")
         
-        # 2. Delete any auto-generated rows (if any)
-        # Usually Lark creates a 1x1 or sized table if row_size > 0.
-        # But we want to append our own rows.
-        # We can try to delete existing children first, OR just append ours.
-        # If we append, the empty rows will remain at top.
-        # So let's try to delete them.
-        
+        # 2. Fetch the created structure (Rows and Cells)
+        # We need to get the rows first.
         try:
-            existing_children = self._fetch_block_children(document_id, table_id)
-            if existing_children:
-                print(f"  Deleting {len(existing_children)} auto-generated rows...")
-                # We can batch delete by index.
-                self.delete_block_children(document_id, table_id, 0, len(existing_children))
+            rows = self._fetch_block_children(document_id, table_id)
         except Exception as e:
-            print(f"  Warning: Failed to cleanup auto-generated rows: {e}")
-
-        # 3. Create Rows with content
-        # content_rows contains Block(Type 32) with children=Block(Type 2)
+             # Retry fetch
+             print(f"Error fetching table rows: {e}. Retrying...")
+             time.sleep(1)
+             rows = self._fetch_block_children(document_id, table_id)
         
-        # We create them in batches
-        try:
-            self.create_blocks(document_id, table_id, content_rows)
-            print(f"  Successfully created {len(content_rows)} rows with content.")
-        except Exception as e:
-            print(f"  Failed to create rows: {e}")
-            # Fallback? No, if this fails, we are stuck.
-            raise e
+        # Strategy: Flatten both source content and target structure to match cells linearly.
+        # This handles cases where Lark API creates a different structure (e.g. 8x1 instead of 4x2)
+        # but total cell count is consistent.
+        
+        # Flatten target cells
+        all_target_cells = []
+        for row in rows:
+            # Fetch cells for this row
+            cells = self._fetch_block_children(document_id, row.block_id)
+            all_target_cells.extend(cells)
             
+        # Flatten source content cells
+        all_content_cells = []
+        for content_row in content_rows:
+            all_content_cells.extend(content_row.children)
+            
+        print(f"Table Population: Found {len(all_target_cells)} target cells and {len(all_content_cells)} content cells.")
+        
+        if len(all_target_cells) != len(all_content_cells):
+             print(f"Warning: Cell count mismatch! Target: {len(all_target_cells)}, Content: {len(all_content_cells)}")
+        
+        # Fill cells
+        for i, target_cell in enumerate(all_target_cells):
+            if i >= len(all_content_cells):
+                break
+            
+            content_cell = all_content_cells[i]
+            cell_content_blocks = content_cell.children
+            
+            if cell_content_blocks:
+                 # Debug: Print what we are inserting
+                 first_block = cell_content_blocks[0]
+                 content_preview = "Unknown"
+                 if hasattr(first_block, 'text') and hasattr(first_block.text, 'elements'):
+                     elements = first_block.text.elements
+                     if elements and hasattr(elements[0], 'text_run'):
+                         content_preview = elements[0].text_run.content
+                 
+                 print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
+                 
+                 # Insert content
+                 try:
+                     # Try inserting at index 0 instead of appending (index -1)
+                     # This might push the default block down or help with layout?
+                     self.create_blocks(document_id, target_cell.block_id, cell_content_blocks, index=0)
+                 except Exception as e:
+                     print(f"    Failed to fill cell {target_cell.block_id}: {e}")
+                 
+                 # Add delay between cell operations to avoid rate limiting
+                 time.sleep(0.1)
+                    
         return created_blocks

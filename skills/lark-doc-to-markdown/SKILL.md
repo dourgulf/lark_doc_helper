@@ -16,7 +16,7 @@ description: 将 Lark/飞书文档转换为 Markdown 格式文档，便于 AI �
 
 1. **在当前项目目录下执行**（确保当前目录或上级目录有 `.env`，内含 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`）：
    ```bash
-   python3 ~/.cursor/skills/lark-doc-to-markdown/scripts/main.py <文档URL> --output output.md
+   ~/.cursor/skills/lark-doc-to-markdown/venv/bin/python ~/.cursor/skills/lark-doc-to-markdown/scripts/main.py <文档URL> --output output.md
    ```
    - **执行时长**：脚本拉取文档、调用飞书 API 并转换可能**需要较长时间**（文档越大越久）。执行该命令时**必须给予足够长的等待时间**，不得因超时提前终止；若环境有超时限制，应设置为足够大（例如数分钟以上）。
    - 将 `<文档URL>` 替换为用户提供的完整 Lark/飞书文档链接（如 `https://xxx.feishu.cn/wiki/...` 或 `https://xxx.larksuite.com/wiki/...`）

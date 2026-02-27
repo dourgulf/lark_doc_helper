@@ -16,7 +16,7 @@ description: 将 Markdown 格式文档导入/写入到 Lark/飞书文档中。�
 
 1. **在当前项目目录下执行**（确保当前目录或上级目录有 `.env`，内含 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`）：
    ```bash
-   python3 ~/.cursor/skills/markdown-to-lark-doc/scripts/main.py --import-file <Markdown文件路径> <目标文档URL>
+   ~/.cursor/skills/markdown-to-lark-doc/venv/bin/python ~/.cursor/skills/markdown-to-lark-doc/scripts/main.py --import-file <Markdown文件路径> <目标文档URL>
    ```
    - **执行时长**：脚本解析 Markdown 并调用飞书 API 创建文档块可能**需要较长时间**（内容越多越久）。执行该命令时**必须给予足够长的等待时间**，不得因超时提前终止。
    - 将 `<Markdown文件路径>` 替换为用户提供的 Markdown 文件路径。
