@@ -197,7 +197,16 @@ class FeishuClient:
                     .build()) \
                 .build()
             
-            response = self.client.docx.v1.document_block_children.create(request)
+            try:
+                response = self.client.docx.v1.document_block_children.create(request)
+            except Exception as e:
+                print(f"Error creating blocks: {e}")
+                # Retry once
+                time.sleep(1)
+                try:
+                    response = self.client.docx.v1.document_block_children.create(request)
+                except Exception as retry_e:
+                    raise Exception(f"Failed to create blocks (batch {i//BATCH_SIZE + 1}) after retry: {retry_e}")
             
             if not response.success():
                 # If validation failed, try to print more details if available
@@ -234,8 +243,16 @@ class FeishuClient:
                 .build()) \
             .build()
             
-        response = self.client.docx.v1.document_block_children.batch_delete(request)
-        
+        try:
+            response = self.client.docx.v1.document_block_children.batch_delete(request)
+        except Exception as e:
+            # If JSON decode error, it might be a success with empty body (which SDK fails to parse).
+            # Lark API sometimes returns empty body for delete operations.
+            if "Expecting value" in str(e):
+                return True
+            print(f"Warning: Exception deleting children for block {block_id}: {e}")
+            return False
+            
         if not response.success():
             # It's possible that there are fewer blocks than end_index, but API should handle it or error?
             # If error is "index out of range", we might need to be more careful.
@@ -313,7 +330,13 @@ class FeishuClient:
         
         # 2. Fetch the created structure (Rows and Cells)
         # We need to get the rows first.
-        rows = self._fetch_block_children(document_id, table_id)
+        try:
+            rows = self._fetch_block_children(document_id, table_id)
+        except Exception as e:
+             # Retry fetch
+             print(f"Error fetching table rows: {e}. Retrying...")
+             time.sleep(1)
+             rows = self._fetch_block_children(document_id, table_id)
         
         # Strategy: Flatten both source content and target structure to match cells linearly.
         # This handles cases where Lark API creates a different structure (e.g. 8x1 instead of 4x2)
@@ -356,16 +379,19 @@ class FeishuClient:
                  print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
                  
                  # Insert content into the cell
-                 self.create_blocks(document_id, target_cell.block_id, cell_content_blocks)
-                 
-                 # Delete the default empty block (index 0)
-                 # Add retry/error handling for deletion, as it might fail if network is flaky
                  try:
-                    success = self.delete_block_children(document_id, target_cell.block_id, 0, 1)
-                    if not success:
-                        print(f"    Failed to delete default block in cell {target_cell.block_id}")
+                     self.create_blocks(document_id, target_cell.block_id, cell_content_blocks)
+                     
+                     # Delete the default empty block (index 0) only if creation succeeded
+                     # Add retry/error handling for deletion, as it might fail if network is flaky
+                     try:
+                        success = self.delete_block_children(document_id, target_cell.block_id, 0, 1)
+                        if not success:
+                            print(f"    Failed to delete default block in cell {target_cell.block_id}")
+                     except Exception as e:
+                        print(f"    Exception deleting default block: {e}")
                  except Exception as e:
-                    print(f"    Exception deleting default block: {e}")
+                     print(f"    Failed to fill cell {target_cell.block_id}: {e}")
                  
                  # Add delay between cell operations to avoid rate limiting
                  time.sleep(0.1)
