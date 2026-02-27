@@ -31,24 +31,36 @@ class MarkdownConverter:
         result = []
         
         current_list_index = 1
-        last_block_type = None
+        last_block_type_for_index = None
+        last_output_block_type = None
         
         for child in children:
             # Handle ordered list numbering
             if child.block_type == 13:
-                if last_block_type != 13:
+                if last_block_type_for_index != 13:
                     current_list_index = 1
                 idx = current_list_index
                 current_list_index += 1
             else:
                 idx = 1
                 
-            last_block_type = child.block_type
+            last_block_type_for_index = child.block_type
             
             text = self._process_block(child, indent_level, list_index=idx)
             if text:
-                result.append(text)
-        return "\n\n".join(result)
+                # Add separator before the block
+                if result:
+                    # If both are list items of the same type, use single newline
+                    if last_output_block_type in [12, 13] and child.block_type == last_output_block_type:
+                         result.append("\n" + text)
+                    else:
+                         result.append("\n\n" + text)
+                else:
+                    result.append(text)
+                
+                last_output_block_type = child.block_type
+                     
+        return "".join(result)
 
     def _process_block(self, block, indent_level, list_index=1):
         content = ""
@@ -210,10 +222,10 @@ class MarkdownConverter:
                      try:
                          record_data = json.loads(record_json)
                          # Mermaid code is usually in 'data' field
-                         mermaid_code = record_data.get('data', '')
-                         if mermaid_code:
-                             # Some cleaning might be needed (e.g., unicode escapes are handled by json.loads)
-                             content = f"```mermaid\n{mermaid_code}\n```"
+                         mermaid_code = record_data.get('data', '').strip()
+                        if mermaid_code:
+                            # Some cleaning might be needed (e.g., unicode escapes are handled by json.loads)
+                            content = f"```mermaid\n{mermaid_code}\n```"
                      except json.JSONDecodeError:
                          # print(f"Warning: Failed to parse AddOn record JSON for block {block.block_id}")
                          pass

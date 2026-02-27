@@ -1,7 +1,7 @@
 import json
 import os
 import lark_oapi as lark
-from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextStyle, TextElement, TextElementStyle, AddOns, Divider, Link
+from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextStyle, TextElement, TextElementStyle, AddOns, Divider, Link, Table, TableProperty, TableCell
 from markdown_it import MarkdownIt
 
 # Inverted from converter.py
@@ -115,11 +115,89 @@ class MarkdownToLarkConverter:
             
             elif token.type == 'hr':
                 self.blocks.append(self._create_divider_block())
+
+            elif token.type == 'table_open':
+                table_block, next_index = self._process_table(tokens, i)
+                if table_block:
+                    self.blocks.append(table_block)
+                i = next_index
+                continue
             
             # Skip other tokens (like close tags if not handled, or unhandled types)
             i += 1
             
         return self.blocks
+
+    def _process_table(self, tokens, start_index):
+        # Parses table structure from token stream
+        # table_open -> thead_open -> tr_open -> th_open -> inline -> th_close ... -> tr_close -> thead_close -> tbody_open ... -> table_close
+        
+        i = start_index + 1
+        rows = []
+        col_count = 0
+        
+        # We need to collect rows first, then build the Table Block
+        
+        current_row_cells = []
+        in_thead = False
+        
+        while i < len(tokens):
+            token = tokens[i]
+            
+            if token.type == 'table_close':
+                break
+                
+            elif token.type == 'thead_open':
+                in_thead = True
+            elif token.type == 'thead_close':
+                in_thead = False
+            
+            elif token.type == 'tr_open':
+                current_row_cells = []
+            elif token.type == 'tr_close':
+                # Create Row Block
+                if not col_count:
+                    col_count = len(current_row_cells)
+                
+                # Build Row Block with Children (Cells)
+                row_block = Block.builder().block_type(32).children(current_row_cells).build()
+                
+                rows.append(row_block)
+                
+            elif token.type == 'th_open' or token.type == 'td_open':
+                # Find content
+                content_elements = []
+                j = i + 1
+                while j < len(tokens):
+                    if tokens[j].type == 'inline':
+                        content_elements = self._process_inline(tokens[j])
+                    elif tokens[j].type == 'th_close' or tokens[j].type == 'td_close':
+                        i = j
+                        break
+                    j += 1
+                
+                # Create Cell Block
+                # Cell contains Text Block (Paragraph)
+                text_block = self._create_text_block(content_elements)
+                cell_block = Block.builder().block_type(33).table_cell(
+                    TableCell.builder().build()
+                ).children([text_block]).build()
+                
+                current_row_cells.append(cell_block)
+                
+            i += 1
+            
+        # Create Table Block
+        if not rows:
+            return None, i
+            
+        table_block = Block.builder().block_type(31).table(
+            Table.builder()
+                .property(TableProperty.builder().column_size(col_count).build())
+                .build()
+        ).children(rows).build()
+        
+        return table_block, i
 
     def _process_inline(self, token):
         elements = []
