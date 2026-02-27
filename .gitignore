@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+venv/
+.DS_Store
+.idea/
+.vscode/
+*.egg-info/
+build/
+dist/
+reproduce_issue.py
+verify_refactor.py
