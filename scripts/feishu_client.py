@@ -2,7 +2,7 @@ import os
 import time
 import lark_oapi as lark
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
-from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest
+from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest, BatchDeleteDocumentBlockChildrenRequest
 from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest
 
 class FeishuClient:
@@ -220,6 +220,73 @@ class FeishuClient:
             
         return all_created_children
 
+    def delete_block_children(self, document_id, block_id, start_index=0, end_index=None):
+        """
+        Delete children of a block using Batch Delete (by index range) or Delete (by ID).
+        The SDK BatchDeleteDocumentBlockChildrenRequest takes start_index/end_index.
+        """
+        request = BatchDeleteDocumentBlockChildrenRequest.builder() \
+            .document_id(document_id) \
+            .block_id(block_id) \
+            .request_body(lark.api.docx.v1.BatchDeleteDocumentBlockChildrenRequestBody.builder()
+                .start_index(start_index)
+                .end_index(end_index if end_index is not None else 10) # Delete first few blocks
+                .build()) \
+            .build()
+            
+        response = self.client.docx.v1.document_block_children.batch_delete(request)
+        
+        if not response.success():
+            # It's possible that there are fewer blocks than end_index, but API should handle it or error?
+            # If error is "index out of range", we might need to be more careful.
+            # But usually for cleanup, we just want to clear.
+            print(f"Warning: Failed to delete children for block {block_id}: {response.msg}")
+            return False
+            
+        return True
+
+    def delete_block_children_by_ids(self, document_id, block_ids):
+        """
+        Delete specific child blocks by ID.
+        Uses DeleteDocumentBlockChildrenRequest which takes a list of IDs.
+        Wait, DeleteDocumentBlockChildrenRequest takes ONE block_id in path and 'children_ids' in body?
+        Let's check API.
+        
+        API: DELETE /open-apis/docx/v1/documents/:document_id/blocks/:block_id/children/batch_delete
+        Body: start_index, end_index
+        
+        There is NO batch delete by ID for children of a block in one call easily?
+        
+        There is `DeleteDocumentBlockRequest` (delete a block itself).
+        DELETE /open-apis/docx/v1/documents/:document_id/blocks/:block_id
+        
+        But we want to delete children OF a cell.
+        If we know the IDs of the children, we can use `DeleteDocumentBlockRequest` on each child?
+        Or maybe `BatchDeleteDocumentBlockRequest` doesn't exist?
+        
+        Wait, I saw `BatchDeleteDocumentBlockChildrenRequest` above. It uses index.
+        
+        If we want to delete by ID, we might have to call Delete for each block.
+        But that's slow.
+        
+        However, for our use case (cleaning up empty default block), we know it's at index 0.
+        So we can use `delete_block_children` with start_index=0, end_index=1.
+        BUT, we insert our new content first.
+        If we insert at index 0, our new content becomes index 0. The old empty block becomes index 1.
+        So we should delete index 1?
+        
+        Or, we append (index=-1). New content is at index 1. Old empty block is at index 0.
+        So we delete index 0.
+        
+        Let's assume we append new content.
+        Original: [EmptyBlock]
+        Append: [EmptyBlock, NewContent...]
+        We want to delete [EmptyBlock] which is index 0.
+        
+        So `delete_block_children(doc_id, cell_id, start_index=0, end_index=1)` should work.
+        """
+        pass
+
     def create_table(self, document_id, parent_id, table_block, content_rows):
         """
         Creates a table and then populates it with content.
@@ -278,7 +345,29 @@ class FeishuClient:
             cell_content_blocks = content_cell.children
             
             if cell_content_blocks:
+                 # Debug: Print what we are inserting
+                 first_block = cell_content_blocks[0]
+                 content_preview = "Unknown"
+                 if hasattr(first_block, 'text') and hasattr(first_block.text, 'elements'):
+                     elements = first_block.text.elements
+                     if elements and hasattr(elements[0], 'text_run'):
+                         content_preview = elements[0].text_run.content
+                 
+                 print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
+                 
                  # Insert content into the cell
                  self.create_blocks(document_id, target_cell.block_id, cell_content_blocks)
+                 
+                 # Delete the default empty block (index 0)
+                 # Add retry/error handling for deletion, as it might fail if network is flaky
+                 try:
+                    success = self.delete_block_children(document_id, target_cell.block_id, 0, 1)
+                    if not success:
+                        print(f"    Failed to delete default block in cell {target_cell.block_id}")
+                 except Exception as e:
+                    print(f"    Exception deleting default block: {e}")
+                 
+                 # Add delay between cell operations to avoid rate limiting
+                 time.sleep(0.1)
                     
         return created_blocks

@@ -203,9 +203,18 @@ class MarkdownToLarkConverter:
         if not rows:
             return None, i
             
+        # Calculate column width to occupy full width (approx 800-900 px/points)
+        total_width = 850
+        avg_width = int(total_width / col_count) if col_count > 0 else 100
+        col_widths = [avg_width] * col_count
+            
         table_block = Block.builder().block_type(31).table(
             Table.builder()
-                .property(TableProperty.builder().column_size(col_count).row_size(len(rows)).build())
+                .property(TableProperty.builder()
+                    .column_size(col_count)
+                    .row_size(len(rows))
+                    .column_width(col_widths)
+                    .build())
                 .build()
         ).build()
         
