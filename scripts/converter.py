@@ -157,21 +157,24 @@ class MarkdownConverter:
                     span = 1
                     cell_text = ""
                     
-                    if child.block_type == 33: # Cell
+                    # Check if this child acts as a container (Cell)
+                    # Note: Sometimes Lark returns Type 2 (Text) blocks as children of Row, 
+                    # which then contain the actual content. We treat anything with children as a container.
+                    cell_children = self.children_map.get(child.block_id, [])
+                    
+                    if child.block_type == 33: # Standard Cell
                         span = child.table_cell.col_span if child.table_cell else 1
-                        # Process content inside the cell
-                        cell_children = self.children_map.get(child.block_id, [])
                         
+                    if cell_children:
+                        # Process content inside the container
                         cell_text_parts = []
                         for c in cell_children:
                             part = self._process_block(c, 0)
                             if part:
                                 cell_text_parts.append(part)
-                                
                         cell_text = "<br>".join(cell_text_parts).strip().replace("\n", "<br>")
                     else:
-                        # Direct content under Row (Treat as a cell)
-                        span = 1
+                        # Direct content (or empty cell)
                         part = self._process_block(child, 0)
                         cell_text = part.strip().replace("\n", "<br>") if part else ""
 

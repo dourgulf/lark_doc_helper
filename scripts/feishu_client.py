@@ -114,43 +114,52 @@ class FeishuClient:
                 break
 
         # Check for missing content in table cells
-        parent_map = {}
-        for b in blocks:
-            pid = b.parent_id
-            if pid not in parent_map:
-                parent_map[pid] = []
-            parent_map[pid].append(b)
-            
-        missing_content_blocks = []
+        # We need to iteratively fetch missing content because the hierarchy is deep:
+        # Table (31) -> Row (32) -> Cell (33) -> Content (2, etc.)
+        # ListDocumentBlockRequest might return Table and Rows, but not Cells, or Cells but not Content.
         
-        # 1. Check Table Rows (Type 32) - they should contain Table Cells (Type 33)
-        for b in blocks:
-            if b.block_type == 32: # Table Row
-                children = parent_map.get(b.block_id, [])
-                # If no children, or children are not cells (this implies missing intermediate cell blocks)
-                # Actually, if children are NOT Type 33, we definitely need to re-fetch to see if we missed the Cell wrapper
-                # But wait, if the API returns Text block with parent_id = Row_ID, then the Cell wrapper IS missing.
-                # Re-fetching children of Row might return the same thing if the API structure is weird.
-                # However, usually Table Row -> Table Cell.
-                if not children or any(child.block_type != 33 for child in children):
-                    missing_content_blocks.append(b.block_id)
+        processed_ids = set()
+        
+        # Max 3 passes to handle depth
+        for pass_index in range(3):
+            # Re-build parent map from current blocks
+            parent_map = {}
+            for b in blocks:
+                pid = b.parent_id
+                if pid not in parent_map:
+                    parent_map[pid] = []
+                parent_map[pid].append(b)
+            
+            missing_content_blocks = []
+            
+            for b in blocks:
+                # Table Row (32) should have children (Cells 33)
+                if b.block_type == 32: 
+                    children = parent_map.get(b.block_id, [])
+                    if not children:
+                        if b.block_id not in processed_ids:
+                            missing_content_blocks.append(b.block_id)
 
-        # 2. Check Table Cells (Type 33) - they should contain content
-        for b in blocks:
-            if b.block_type == 33: # Table Cell
-                if b.block_id not in parent_map:
-                    missing_content_blocks.append(b.block_id)
-
-        if missing_content_blocks:
+                # Table Cell (33) should have children (Content)
+                elif b.block_type == 33: 
+                    children = parent_map.get(b.block_id, [])
+                    if not children:
+                        if b.block_id not in processed_ids:
+                            missing_content_blocks.append(b.block_id)
+                            
+            if not missing_content_blocks:
+                break
+                
             # Remove duplicates
             missing_content_blocks = list(set(missing_content_blocks))
-            print(f"Found {len(missing_content_blocks)} blocks (Rows/Cells) with potentially missing content. Fetching children...")
-            fetched_count = 0
+            print(f"Pass {pass_index + 1}: Found {len(missing_content_blocks)} blocks (Rows/Cells) with potentially missing content. Fetching children...")
             
+            fetched_count = 0
             # Use a set to track existing block IDs to avoid duplicates
             existing_ids = {b.block_id for b in blocks}
             
             for block_id in missing_content_blocks:
+                processed_ids.add(block_id)
                 children = self._fetch_block_children(document_id, block_id)
                 if children:
                     new_children = [c for c in children if c.block_id not in existing_ids]
@@ -160,8 +169,11 @@ class FeishuClient:
                             existing_ids.add(c.block_id)
                         fetched_count += 1
                 # Add delay to avoid rate limiting (QPS limit)
-                time.sleep(0.2)
+                time.sleep(0.1) 
             print(f"Successfully fetched content for {fetched_count} blocks.")
+            
+            if fetched_count == 0:
+                break
             
         return blocks
 
