@@ -1,0 +1,31 @@
+{
+  "name": "lark-doc-helper-skills",
+  "version": "1.0.0",
+  "description": "Lark/Feishu Doc Helper Skills for Cursor",
+  "bin": {
+    "lark-doc-helper-install": "./bin/install.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "cursor",
+    "skills",
+    "lark",
+    "feishu",
+    "markdown"
+  ],
+  "author": "",
+  "license": "ISC",
+  "files": [
+    "bin",
+    "scripts",
+    "SKILL.md",
+    "SKILL_markdown_to_lark_doc.md",
+    "requirements.txt"
+  ],
+  "exclude": [
+    "scripts/.env",
+    "scripts/__pycache__"
+  ]
+}

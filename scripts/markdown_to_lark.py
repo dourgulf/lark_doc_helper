@@ -20,7 +20,7 @@ CODE_LANGUAGE_MAP = {
 }
 
 # Placeholder for Mermaid Component Type ID
-MERMAID_COMPONENT_TYPE_ID = os.getenv("MERMAID_COMPONENT_TYPE_ID", "blk_640017963d808005a21a6445") 
+MERMAID_COMPONENT_TYPE_ID = os.getenv("MERMAID_COMPONENT_TYPE_ID") 
 
 class MarkdownToLarkConverter:
     def __init__(self, markdown_content, mermaid_component_id=None):
