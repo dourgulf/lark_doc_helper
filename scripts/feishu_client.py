@@ -68,11 +68,80 @@ class FeishuClient:
         print(f"Warning: Failed to upload image '{file_name}': {response.msg}")
         return None
 
+    @staticmethod
+    def _get_image_display_size(file_path):
+        """Return (width, height) of an image as it would be displayed,
+        accounting for EXIF orientation in JPEG files.
+        Returns (None, None) if dimensions cannot be determined."""
+        import struct
+
+        with open(file_path, "rb") as f:
+            header = f.read(2)
+
+        # ── JPEG ──────────────────────────────────────────────────────────────
+        if header == b'\xff\xd8':
+            raw_w, raw_h, orientation = None, None, 1
+            with open(file_path, "rb") as f:
+                data = f.read()
+
+            i = 2
+            while i < len(data) - 3:
+                if data[i] != 0xff:
+                    break
+                marker = data[i + 1]
+                if marker in (0xd8, 0xd9):  # SOI / EOI – no length field
+                    i += 2
+                    continue
+                if i + 3 >= len(data):
+                    break
+                seg_len = struct.unpack('>H', data[i + 2:i + 4])[0]
+
+                # APP1 → EXIF orientation
+                if marker == 0xe1 and data[i + 4:i + 8] == b'Exif':
+                    exif = data[i + 10:i + 2 + seg_len]
+                    if len(exif) >= 8:
+                        endian = '<' if exif[:2] == b'II' else '>'
+                        ifd_off = struct.unpack(endian + 'I', exif[4:8])[0]
+                        if ifd_off + 2 <= len(exif):
+                            num = struct.unpack(endian + 'H', exif[ifd_off:ifd_off + 2])[0]
+                            for k in range(num):
+                                e = ifd_off + 2 + k * 12
+                                if e + 12 > len(exif):
+                                    break
+                                tag = struct.unpack(endian + 'H', exif[e:e + 2])[0]
+                                if tag == 0x0112:  # Orientation
+                                    orientation = struct.unpack(endian + 'H', exif[e + 8:e + 10])[0]
+                                    break
+
+                # SOF0/SOF1/SOF2 → pixel dimensions
+                elif marker in (0xc0, 0xc1, 0xc2):
+                    raw_h = struct.unpack('>H', data[i + 5:i + 7])[0]
+                    raw_w = struct.unpack('>H', data[i + 7:i + 9])[0]
+
+                i += 2 + seg_len
+
+            if raw_w is None:
+                return None, None
+            # Orientations 5-8 rotate 90° or 270° → swap axes
+            if orientation in (5, 6, 7, 8):
+                return raw_h, raw_w
+            return raw_w, raw_h
+
+        # ── PNG ───────────────────────────────────────────────────────────────
+        if header == b'\x89P':
+            with open(file_path, "rb") as f:
+                f.read(16)  # skip PNG sig + length + "IHDR"
+                w = struct.unpack('>I', f.read(4))[0]
+                h = struct.unpack('>I', f.read(4))[0]
+            return w, h
+
+        return None, None
+
     def create_image_block(self, document_id, parent_id, file_path):
         """Create an Image block (type 27) from a local file via 3-step process:
         1. Create an empty Image block to get a block_id.
         2. Upload the image with parent_node=block_id.
-        3. Patch the block with replace_image to set the file_token.
+        3. Patch the block with replace_image to set the file_token and display dimensions.
         Returns the created block_id, or None on failure."""
         # Step 1: Create empty Image block
         empty_img_block = Block.builder().block_type(27).image(DocxImage()).build()
@@ -91,12 +160,16 @@ class FeishuClient:
 
         time.sleep(0.1)
 
-        # Step 3: Patch block with the file_token
+        # Step 3: Patch block with the file_token and correct display dimensions
+        w, h = self._get_image_display_size(file_path)
+        img_builder = ReplaceImageRequest.builder().token(file_token)
+        if w and h:
+            img_builder = img_builder.width(w).height(h)
         patch_req = PatchDocumentBlockRequest.builder() \
             .document_id(document_id) \
             .block_id(block_id) \
             .request_body(UpdateBlockRequest.builder()
-                .replace_image(ReplaceImageRequest.builder().token(file_token).build())
+                .replace_image(img_builder.build())
                 .build()) \
             .build()
         resp = self.client.docx.v1.document_block.patch(patch_req)
