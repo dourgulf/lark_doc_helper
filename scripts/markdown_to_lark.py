@@ -173,16 +173,31 @@ class MarkdownToLarkConverter:
             elif token.type == 'th_open' or token.type == 'td_open':
                 # Find content
                 content_elements = []
+                inline_token = None
                 j = i + 1
                 while j < len(tokens):
                     if tokens[j].type == 'inline':
+                        inline_token = tokens[j]
                         content_elements = self._process_inline(tokens[j])
                     elif tokens[j].type == 'th_close' or tokens[j].type == 'td_close':
                         i = j
                         break
                     j += 1
 
-                cell_content_block = self._create_text_block(content_elements)
+                # Solo image cell → placeholder with _local_image_path for deferred upload
+                if inline_token and self._is_solo_image(inline_token):
+                    img_child = next((c for c in inline_token.children if c.type == 'image'), None)
+                    if img_child:
+                        src = img_child.attrGet('src')
+                        alt = img_child.content or os.path.basename(src)
+                        img_placeholder = Block.builder().block_type(27).image(LarkImage()).build()
+                        img_placeholder._local_image_path = src
+                        img_placeholder._image_alt = alt
+                        cell_content_block = img_placeholder
+                    else:
+                        cell_content_block = self._create_text_block(content_elements)
+                else:
+                    cell_content_block = self._create_text_block(content_elements)
                 
                 cell_block = Block.builder().block_type(33).table_cell(
                     TableCell.builder().build()

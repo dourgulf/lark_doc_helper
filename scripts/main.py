@@ -119,6 +119,16 @@ def main():
                     print("Creating Table...")
                     content_rows = block._table_content_rows
                     del block._table_content_rows
+
+                    # Resolve relative image paths in table cells to absolute paths
+                    for row in content_rows:
+                        for cell in row.children:
+                            for content_block in cell.children:
+                                if hasattr(content_block, '_local_image_path'):
+                                    src = content_block._local_image_path
+                                    if not (src.startswith("http://") or src.startswith("https://")):
+                                        content_block._local_image_path = os.path.join(md_dir, src)
+
                     client.create_table(obj_token, obj_token, block, content_rows)
 
                 elif hasattr(block, '_local_image_path'):

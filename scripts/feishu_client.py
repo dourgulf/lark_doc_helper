@@ -5,7 +5,7 @@ from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest, BatchDeleteDocumentBlockChildrenRequest, PatchDocumentBlockRequest
 from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest, UploadAllMediaRequest
 from lark_oapi.api.drive.v1.model import UploadAllMediaRequestBody
-from lark_oapi.api.docx.v1.model import Block, Image as DocxImage, UpdateBlockRequest, ReplaceImageRequest
+from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextElement, Image as DocxImage, UpdateBlockRequest, ReplaceImageRequest
 
 class FeishuClient:
     def __init__(self, app_id, app_secret, domain=None):
@@ -508,30 +508,50 @@ class FeishuClient:
         for i, target_cell in enumerate(all_target_cells):
             if i >= len(all_content_cells):
                 break
-            
+
             content_cell = all_content_cells[i]
             cell_content_blocks = content_cell.children
-            
+
             if cell_content_blocks:
-                 # Debug: Print what we are inserting
-                 first_block = cell_content_blocks[0]
-                 content_preview = "Unknown"
-                 if hasattr(first_block, 'text') and hasattr(first_block.text, 'elements'):
-                     elements = first_block.text.elements
-                     if elements and hasattr(elements[0], 'text_run'):
-                         content_preview = elements[0].text_run.content
-                 
-                 print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
-                 
-                 # Insert content
-                 try:
-                     # Try inserting at index 0 instead of appending (index -1)
-                     # This might push the default block down or help with layout?
-                     self.create_blocks(document_id, target_cell.block_id, cell_content_blocks, index=0)
-                 except Exception as e:
-                     print(f"    Failed to fill cell {target_cell.block_id}: {e}")
-                 
-                 # Add delay between cell operations to avoid rate limiting
-                 time.sleep(0.1)
+                first_block = cell_content_blocks[0]
+
+                if hasattr(first_block, '_local_image_path'):
+                    # Solo image in table cell — attempt 3-step Image block creation
+                    abs_path = first_block._local_image_path
+                    alt_text = getattr(first_block, '_image_alt', os.path.basename(abs_path))
+                    print(f"  Uploading image for cell {i}: {abs_path}")
+                    try:
+                        if os.path.exists(abs_path):
+                            self.create_image_block(document_id, target_cell.block_id, abs_path)
+                        else:
+                            raise FileNotFoundError(f"Image not found: {abs_path}")
+                    except Exception as e:
+                        print(f"  Warning: Image block in table cell failed ({e}), falling back to alt text.")
+                        text_elem = TextElement.builder().text_run(
+                            TextRun.builder().content(alt_text).build()
+                        ).build()
+                        fallback = Block.builder().block_type(2).text(
+                            Text.builder().elements([text_elem]).build()
+                        ).build()
+                        try:
+                            self.create_blocks(document_id, target_cell.block_id, [fallback], index=0)
+                        except Exception as e2:
+                            print(f"    Fallback text also failed: {e2}")
+                else:
+                    content_preview = "Unknown"
+                    if hasattr(first_block, 'text') and hasattr(first_block.text, 'elements'):
+                        elements = first_block.text.elements
+                        if elements and hasattr(elements[0], 'text_run'):
+                            content_preview = elements[0].text_run.content
+
+                    print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
+
+                    try:
+                        self.create_blocks(document_id, target_cell.block_id, cell_content_blocks, index=0)
+                    except Exception as e:
+                        print(f"    Failed to fill cell {target_cell.block_id}: {e}")
+
+                # Add delay between cell operations to avoid rate limiting
+                time.sleep(0.1)
                     
         return created_blocks
