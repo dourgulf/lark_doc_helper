@@ -172,37 +172,23 @@ class MarkdownToLarkConverter:
                 
             elif token.type == 'th_open' or token.type == 'td_open':
                 # Find content
-                content_elements = []
                 inline_token = None
                 j = i + 1
                 while j < len(tokens):
                     if tokens[j].type == 'inline':
                         inline_token = tokens[j]
-                        content_elements = self._process_inline(tokens[j])
                     elif tokens[j].type == 'th_close' or tokens[j].type == 'td_close':
                         i = j
                         break
                     j += 1
 
-                # Solo image cell → placeholder with _local_image_path for deferred upload
-                if inline_token and self._is_solo_image(inline_token):
-                    img_child = next((c for c in inline_token.children if c.type == 'image'), None)
-                    if img_child:
-                        src = img_child.attrGet('src')
-                        alt = img_child.content or os.path.basename(src)
-                        img_placeholder = Block.builder().block_type(27).image(LarkImage()).build()
-                        img_placeholder._local_image_path = src
-                        img_placeholder._image_alt = alt
-                        cell_content_block = img_placeholder
-                    else:
-                        cell_content_block = self._create_text_block(content_elements)
-                else:
-                    cell_content_block = self._create_text_block(content_elements)
-                
+                # Split cell content into blocks (text and image placeholders)
+                cell_content_blocks = self._process_cell_content(inline_token)
+
                 cell_block = Block.builder().block_type(33).table_cell(
                     TableCell.builder().build()
-                ).children([cell_content_block]).build()
-                
+                ).children(cell_content_blocks).build()
+
                 current_row_cells.append(cell_block)
                 
             i += 1
@@ -285,6 +271,62 @@ class MarkdownToLarkConverter:
         children = inline_token.children or []
         non_ws = [c for c in children if not (c.type == 'text' and c.content.strip() == '')]
         return len(non_ws) == 1 and non_ws[0].type == 'image'
+
+    def _process_cell_content(self, inline_token):
+        """Parse inline content of a table cell into a list of Block objects.
+        Images become placeholder blocks with _local_image_path; surrounding text
+        becomes text blocks. This supports mixed text+image cells."""
+        if not inline_token:
+            return [self._create_text_block([])]
+
+        blocks = []
+        pending_elems = []
+        current_style = {'bold': False, 'italic': False, 'strike': False, 'code': False, 'link': None}
+
+        for child in (inline_token.children or []):
+            if child.type == 'text':
+                style = self._build_style(current_style)
+                pending_elems.append(TextElement.builder().text_run(
+                    TextRun.builder().content(child.content).text_element_style(style).build()
+                ).build())
+            elif child.type == 'code_inline':
+                style = self._build_style(current_style, force_code=True)
+                pending_elems.append(TextElement.builder().text_run(
+                    TextRun.builder().content(child.content).text_element_style(style).build()
+                ).build())
+            elif child.type == 'strong_open':
+                current_style['bold'] = True
+            elif child.type == 'strong_close':
+                current_style['bold'] = False
+            elif child.type == 'em_open':
+                current_style['italic'] = True
+            elif child.type == 'em_close':
+                current_style['italic'] = False
+            elif child.type == 's_open':
+                current_style['strike'] = True
+            elif child.type == 's_close':
+                current_style['strike'] = False
+            elif child.type == 'link_open':
+                current_style['link'] = child.attrGet('href')
+            elif child.type == 'link_close':
+                current_style['link'] = None
+            elif child.type == 'image':
+                # Flush pending text before the image
+                if pending_elems:
+                    blocks.append(self._create_text_block(pending_elems))
+                    pending_elems = []
+                src = child.attrGet('src')
+                alt = child.content or os.path.basename(src)
+                img = Block.builder().block_type(27).image(LarkImage()).build()
+                img._local_image_path = src
+                img._image_alt = alt
+                blocks.append(img)
+
+        # Flush remaining text
+        if pending_elems:
+            blocks.append(self._create_text_block(pending_elems))
+
+        return blocks if blocks else [self._create_text_block([])]
 
     def _build_style(self, style_dict, force_code=False):
         builder = TextElementStyle.builder()

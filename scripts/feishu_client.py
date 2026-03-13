@@ -137,7 +137,7 @@ class FeishuClient:
 
         return None, None
 
-    def create_image_block(self, document_id, parent_id, file_path):
+    def create_image_block(self, document_id, parent_id, file_path, index=-1):
         """Create an Image block (type 27) from a local file via 3-step process:
         1. Create an empty Image block to get a block_id.
         2. Upload the image with parent_node=block_id.
@@ -145,7 +145,7 @@ class FeishuClient:
         Returns the created block_id, or None on failure."""
         # Step 1: Create empty Image block
         empty_img_block = Block.builder().block_type(27).image(DocxImage()).build()
-        created = self.create_blocks(document_id, parent_id, [empty_img_block])
+        created = self.create_blocks(document_id, parent_id, [empty_img_block], index=index)
         if not created:
             print(f"Warning: Failed to create empty Image block for '{file_path}'")
             return None
@@ -512,21 +512,24 @@ class FeishuClient:
             content_cell = all_content_cells[i]
             cell_content_blocks = content_cell.children
 
-            if cell_content_blocks:
-                first_block = cell_content_blocks[0]
+            if not cell_content_blocks:
+                continue
 
-                if hasattr(first_block, '_local_image_path'):
-                    # Solo image in table cell — attempt 3-step Image block creation
-                    abs_path = first_block._local_image_path
-                    alt_text = getattr(first_block, '_image_alt', os.path.basename(abs_path))
-                    print(f"  Uploading image for cell {i}: {abs_path}")
+            print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} block(s).")
+
+            insert_idx = 0
+            for content_block in cell_content_blocks:
+                if hasattr(content_block, '_local_image_path'):
+                    abs_path = content_block._local_image_path
+                    alt_text = getattr(content_block, '_image_alt', os.path.basename(abs_path))
                     try:
                         if os.path.exists(abs_path):
-                            self.create_image_block(document_id, target_cell.block_id, abs_path)
+                            self.create_image_block(document_id, target_cell.block_id, abs_path, index=insert_idx)
+                            insert_idx += 1
                         else:
                             raise FileNotFoundError(f"Image not found: {abs_path}")
                     except Exception as e:
-                        print(f"  Warning: Image block in table cell failed ({e}), falling back to alt text.")
+                        print(f"    Image block failed ({e}), using alt text.")
                         text_elem = TextElement.builder().text_run(
                             TextRun.builder().content(alt_text).build()
                         ).build()
@@ -534,24 +537,17 @@ class FeishuClient:
                             Text.builder().elements([text_elem]).build()
                         ).build()
                         try:
-                            self.create_blocks(document_id, target_cell.block_id, [fallback], index=0)
+                            self.create_blocks(document_id, target_cell.block_id, [fallback], index=insert_idx)
+                            insert_idx += 1
                         except Exception as e2:
-                            print(f"    Fallback text also failed: {e2}")
+                            print(f"    Fallback also failed: {e2}")
                 else:
-                    content_preview = "Unknown"
-                    if hasattr(first_block, 'text') and hasattr(first_block.text, 'elements'):
-                        elements = first_block.text.elements
-                        if elements and hasattr(elements[0], 'text_run'):
-                            content_preview = elements[0].text_run.content
-
-                    print(f"  Filling Cell {i} ({target_cell.block_id}) with {len(cell_content_blocks)} blocks. First: '{content_preview}'")
-
                     try:
-                        self.create_blocks(document_id, target_cell.block_id, cell_content_blocks, index=0)
+                        self.create_blocks(document_id, target_cell.block_id, [content_block], index=insert_idx)
+                        insert_idx += 1
                     except Exception as e:
-                        print(f"    Failed to fill cell {target_cell.block_id}: {e}")
+                        print(f"    Failed to insert block in cell {target_cell.block_id}: {e}")
 
-                # Add delay between cell operations to avoid rate limiting
                 time.sleep(0.1)
                     
         return created_blocks
