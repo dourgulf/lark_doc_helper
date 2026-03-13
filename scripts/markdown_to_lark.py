@@ -1,7 +1,7 @@
 import json
 import os
 import lark_oapi as lark
-from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextStyle, TextElement, TextElementStyle, AddOns, Divider, Link, Table, TableProperty, TableCell
+from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextStyle, TextElement, TextElementStyle, AddOns, Divider, Link, Table, TableProperty, TableCell, Image as LarkImage
 from markdown_it import MarkdownIt
 
 # Inverted from converter.py
@@ -23,11 +23,11 @@ CODE_LANGUAGE_MAP = {
 MERMAID_COMPONENT_TYPE_ID = os.getenv("MERMAID_COMPONENT_TYPE_ID") 
 
 class MarkdownToLarkConverter:
-    def __init__(self, markdown_content, mermaid_component_id=None):
+    def __init__(self, markdown_content, mermaid_component_id=None, image_uploader=None):
         self.markdown_content = markdown_content
         self.blocks = []
         self.mermaid_component_id = mermaid_component_id or MERMAID_COMPONENT_TYPE_ID
-        # Use default preset which includes most common features
+        # image_uploader kept for API compatibility but no longer used internally
         self.md = MarkdownIt('commonmark').enable('table').enable('strikethrough')
         
     def parse(self):
@@ -51,16 +51,17 @@ class MarkdownToLarkConverter:
             elif token.type == 'paragraph_open':
                 # Next token should be inline
                 if i + 1 < len(tokens) and tokens[i+1].type == 'inline':
-                    text_elements = self._process_inline(tokens[i+1])
-                    # Check if we are inside a list (handled by recursive structure in markdown-it? No, it's flat token stream)
-                    # But we handle list items separately below.
-                    # Wait, top-level paragraph?
-                    # If the paragraph is inside a list item, we should have handled it in list_item logic?
-                    # But markdown-it token stream is flat.
-                    # list_item_open -> paragraph_open -> inline -> paragraph_close -> list_item_close
-                    # So if I handle list logic by skipping tokens, I won't see this paragraph_open here.
-                    # Correct.
-                    
+                    inline_token = tokens[i+1]
+                    # Standalone image paragraph → placeholder Image block with _local_image_path
+                    if self._is_solo_image(inline_token):
+                        img_child = next(c for c in inline_token.children if c.type == 'image')
+                        src = img_child.attrGet('src')
+                        img_block = Block.builder().block_type(27).image(LarkImage()).build()
+                        img_block._local_image_path = src
+                        self.blocks.append(img_block)
+                        i += 2  # Skip inline and paragraph_close
+                        continue
+                    text_elements = self._process_inline(inline_token)
                     self.blocks.append(self._create_text_block(text_elements))
                     i += 2 # Skip inline and paragraph_close
                 else:
@@ -180,23 +181,12 @@ class MarkdownToLarkConverter:
                         i = j
                         break
                     j += 1
+
+                cell_content_block = self._create_text_block(content_elements)
                 
-                # Create Cell Block
-                # Cell contains Text Block (Paragraph)
-                text_block = self._create_text_block(content_elements)
-                
-                # IMPORTANT: Try to add `table_cell` attribute again, but as an object.
-                # Previous error: `Invalid parameter type in json: children` for ROW.
-                # This means the ROW's children (CELLS) are invalid.
-                # A Cell (33) MUST be valid.
-                
-                # Maybe the issue is that we are using `children([text_block])`?
-                # Does Cell support children in creation? Yes.
-                
-                # Let's try adding `table_cell` property back. It might be required even if empty.
                 cell_block = Block.builder().block_type(33).table_cell(
                     TableCell.builder().build()
-                ).children([text_block]).build()
+                ).children([cell_content_block]).build()
                 
                 current_row_cells.append(cell_block)
                 
@@ -265,13 +255,21 @@ class MarkdownToLarkConverter:
             elif child.type == 'link_close':
                 current_style['link'] = None
             elif child.type == 'image':
-                 # Fallback for image: just show alt text or url
-                 content = f"![{child.content}]({child.attrGet('src')})"
-                 elements.append(TextElement.builder().text_run(
+                # Inline images cannot be embedded as Image blocks within a text run.
+                # Use alt text if available, otherwise fall back to markdown syntax.
+                alt = child.content
+                content = alt if alt else f"![{child.content}]({child.attrGet('src')})"
+                elements.append(TextElement.builder().text_run(
                     TextRun.builder().content(content).build()
-                 ).build())
+                ).build())
                 
         return elements
+
+    def _is_solo_image(self, inline_token):
+        """Returns True if inline_token contains exactly one image and no non-whitespace text siblings."""
+        children = inline_token.children or []
+        non_ws = [c for c in children if not (c.type == 'text' and c.content.strip() == '')]
+        return len(non_ws) == 1 and non_ws[0].type == 'image'
 
     def _build_style(self, style_dict, force_code=False):
         builder = TextElementStyle.builder()

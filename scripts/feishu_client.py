@@ -3,7 +3,9 @@ import time
 import lark_oapi as lark
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest, BatchDeleteDocumentBlockChildrenRequest, PatchDocumentBlockRequest
-from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest
+from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest, UploadAllMediaRequest
+from lark_oapi.api.drive.v1.model import UploadAllMediaRequestBody
+from lark_oapi.api.docx.v1.model import Block, Image as DocxImage, UpdateBlockRequest, ReplaceImageRequest
 
 class FeishuClient:
     def __init__(self, app_id, app_secret, domain=None):
@@ -44,6 +46,64 @@ class FeishuClient:
             return response.data.tmp_download_urls[0].tmp_download_url
             
         return None
+
+    def upload_media(self, file_path, parent_node):
+        """Upload a local image to Lark Drive for embedding in a document.
+        parent_node must be the block_id of an already-created Image block (type 27).
+        Returns file_token or None on failure."""
+        file_name = os.path.basename(file_path)
+        file_size = os.path.getsize(file_path)
+        with open(file_path, "rb") as f:
+            body = UploadAllMediaRequestBody.builder() \
+                .file_name(file_name) \
+                .parent_type("docx_image") \
+                .parent_node(parent_node) \
+                .size(file_size) \
+                .file(f) \
+                .build()
+            request = UploadAllMediaRequest.builder().request_body(body).build()
+            response = self.client.drive.v1.media.upload_all(request)
+        if response.success():
+            return response.data.file_token
+        print(f"Warning: Failed to upload image '{file_name}': {response.msg}")
+        return None
+
+    def create_image_block(self, document_id, parent_id, file_path):
+        """Create an Image block (type 27) from a local file via 3-step process:
+        1. Create an empty Image block to get a block_id.
+        2. Upload the image with parent_node=block_id.
+        3. Patch the block with replace_image to set the file_token.
+        Returns the created block_id, or None on failure."""
+        # Step 1: Create empty Image block
+        empty_img_block = Block.builder().block_type(27).image(DocxImage()).build()
+        created = self.create_blocks(document_id, parent_id, [empty_img_block])
+        if not created:
+            print(f"Warning: Failed to create empty Image block for '{file_path}'")
+            return None
+        block_id = created[0].block_id
+
+        time.sleep(0.1)
+
+        # Step 2: Upload image using the new block_id as parent_node
+        file_token = self.upload_media(file_path, block_id)
+        if not file_token:
+            return None
+
+        time.sleep(0.1)
+
+        # Step 3: Patch block with the file_token
+        patch_req = PatchDocumentBlockRequest.builder() \
+            .document_id(document_id) \
+            .block_id(block_id) \
+            .request_body(UpdateBlockRequest.builder()
+                .replace_image(ReplaceImageRequest.builder().token(file_token).build())
+                .build()) \
+            .build()
+        resp = self.client.docx.v1.document_block.patch(patch_req)
+        if not resp.success():
+            print(f"Warning: Failed to set image for block {block_id}: {resp.msg}")
+            return None
+        return block_id
 
     def get_wiki_node_info(self, token):
         # Retrieve wiki node info to get the actual document token and type

@@ -91,42 +91,55 @@ def main():
                 print(f"Warning: Failed to scan existing blocks: {e}")
                 mermaid_id = None
 
-            converter = MarkdownToLarkConverter(md_content, mermaid_component_id=mermaid_id)
+            md_dir = os.path.dirname(os.path.abspath(args.import_file))
+
+            converter = MarkdownToLarkConverter(
+                md_content,
+                mermaid_component_id=mermaid_id,
+            )
+
             lark_blocks = converter.parse()
-            
+
             print(f"Parsed {len(lark_blocks)} blocks from Markdown.")
-            
+
             # Create blocks in the document
             # We append to the root block (which is the document itself, so parent_id = obj_token)
             print("Uploading blocks to Lark...")
-            
-            # Iterate through blocks to handle special cases like Tables
-            # We process blocks sequentially or in batches, but if we encounter a Table, we must handle it separately.
-            
+
+            # Iterate through blocks to handle special cases like Tables and local Images.
             blocks_to_create = []
-            
+
             for block in lark_blocks:
-                # Check if it's a table that needs special handling
                 if hasattr(block, '_table_content_rows'):
-                    # If we have accumulated blocks, create them first
+                    # Flush accumulated blocks before table
                     if blocks_to_create:
                         client.create_blocks(obj_token, obj_token, blocks_to_create)
                         blocks_to_create = []
-                        
-                    # Now handle the table
+
                     print("Creating Table...")
                     content_rows = block._table_content_rows
-                    
-                    # Clone the block to avoid modifying the original if needed, or just use it.
-                    # But we need to remove the attribute from the object passed to SDK?
-                    # SDK uses json.dumps which ignores underscores usually, but `_table_content_rows` is an attribute.
-                    # Safest is to remove it.
                     del block._table_content_rows
-                    
                     client.create_table(obj_token, obj_token, block, content_rows)
+
+                elif hasattr(block, '_local_image_path'):
+                    # Flush accumulated blocks before standalone image
+                    if blocks_to_create:
+                        client.create_blocks(obj_token, obj_token, blocks_to_create)
+                        blocks_to_create = []
+
+                    src = block._local_image_path
+                    if src.startswith("http://") or src.startswith("https://"):
+                        print(f"Skipping URL image (not local): {src}")
+                    else:
+                        abs_path = os.path.join(md_dir, src)
+                        if not os.path.exists(abs_path):
+                            print(f"Warning: Image file not found: {abs_path}")
+                        else:
+                            print(f"Uploading image: {abs_path}")
+                            client.create_image_block(obj_token, obj_token, abs_path)
                 else:
                     blocks_to_create.append(block)
-            
+
             # Create remaining blocks
             if blocks_to_create:
                 client.create_blocks(obj_token, obj_token, blocks_to_create)
