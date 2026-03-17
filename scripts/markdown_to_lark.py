@@ -118,9 +118,8 @@ class MarkdownToLarkConverter:
                 self.blocks.append(self._create_divider_block())
 
             elif token.type == 'table_open':
-                table_block, next_index = self._process_table(tokens, i)
-                if table_block:
-                    self.blocks.append(table_block)
+                table_blocks, next_index = self._process_table(tokens, i)
+                self.blocks.extend(table_blocks)
                 i = next_index
                 continue
             
@@ -193,29 +192,63 @@ class MarkdownToLarkConverter:
                 
             i += 1
             
-        # Create Table Block
+        # Lark API hard limits: maximum 9 columns and 9 rows per table.
+        MAX_COLUMNS = 9
+        MAX_ROWS = 9
+
         if not rows:
-            return None, i
-            
+            return [], i
+
+        # Truncate columns if needed
+        if col_count > MAX_COLUMNS:
+            print(f"[Warning] Table has {col_count} columns, but Lark API supports a maximum of {MAX_COLUMNS}. "
+                  f"Truncating to {MAX_COLUMNS} columns (last {col_count - MAX_COLUMNS} column(s) will be dropped).")
+            truncated_rows = []
+            for row in rows:
+                truncated_cells = (row.children or [])[:MAX_COLUMNS]
+                new_row = Block.builder().block_type(32).children(truncated_cells).build()
+                new_row.table_row = {}
+                truncated_rows.append(new_row)
+            rows = truncated_rows
+            col_count = MAX_COLUMNS
+
+        # Split into sub-tables if row count exceeds limit (header row repeated in each chunk)
+        header_row = rows[0]
+        data_rows = rows[1:]
+        if len(rows) > MAX_ROWS:
+            rows_per_chunk = MAX_ROWS - 1  # reserve one slot for the header
+            n_chunks = -(-len(data_rows) // rows_per_chunk)  # ceil division
+            print(f"[Warning] Table has {len(rows)} rows, but Lark API supports a maximum of {MAX_ROWS}. "
+                  f"Splitting into {n_chunks} sub-table(s).")
+            row_chunks = [
+                [header_row] + data_rows[k * rows_per_chunk:(k + 1) * rows_per_chunk]
+                for k in range(n_chunks)
+            ]
+        else:
+            row_chunks = [rows]
+
         # Calculate column width to occupy full width (approx 800-900 px/points)
+        # Lark API enforces a minimum column width; clamp to at least 100 to avoid "invalid param".
         total_width = 850
-        avg_width = int(total_width / col_count) if col_count > 0 else 100
+        MIN_COL_WIDTH = 100
+        avg_width = max(MIN_COL_WIDTH, int(total_width / col_count)) if col_count > 0 else MIN_COL_WIDTH
         col_widths = [avg_width] * col_count
-            
-        table_block = Block.builder().block_type(31).table(
-            Table.builder()
-                .property(TableProperty.builder()
-                    .column_size(col_count)
-                    .row_size(len(rows))
-                    .column_width(col_widths)
-                    .build())
-                .build()
-        ).build()
-        
-        # Attach rows to the table block for post-processing in main.py
-        table_block._table_content_rows = rows
-        
-        return table_block, i
+
+        table_blocks = []
+        for chunk_rows in row_chunks:
+            table_block = Block.builder().block_type(31).table(
+                Table.builder()
+                    .property(TableProperty.builder()
+                        .column_size(col_count)
+                        .row_size(len(chunk_rows))
+                        .column_width(col_widths)
+                        .build())
+                    .build()
+            ).build()
+            table_block._table_content_rows = chunk_rows
+            table_blocks.append(table_block)
+
+        return table_blocks, i
 
     def _process_inline(self, token):
         elements = []

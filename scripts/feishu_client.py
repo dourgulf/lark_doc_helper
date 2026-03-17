@@ -208,6 +208,10 @@ class FeishuClient:
             response = self.client.docx.v1.document_block_children.get(request)
             
             if not response.success():
+                if 'frequency' in response.msg.lower() or 'rate' in response.msg.lower() or 'limit' in response.msg.lower():
+                    print(f"Warning: Rate limited fetching children for block {block_id}. Retrying in 1s...")
+                    time.sleep(1)
+                    continue
                 print(f"Warning: Failed to get children for block {block_id}: {response.msg}")
                 break
             
