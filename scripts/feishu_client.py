@@ -1,10 +1,13 @@
 import os
 import time
+import requests
 import lark_oapi as lark
-from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
+from lark_oapi.api.sheets.v3 import QuerySpreadsheetSheetRequest
+from lark_oapi.core.token import TokenManager
+
 from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChildrenRequest, CreateDocumentBlockChildrenRequest, BatchDeleteDocumentBlockChildrenRequest, PatchDocumentBlockRequest
-from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest, UploadAllMediaRequest
-from lark_oapi.api.drive.v1.model import UploadAllMediaRequestBody
+from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest, UploadAllMediaRequest, CreateExportTaskRequest, GetExportTaskRequest, DownloadExportTaskRequest
+from lark_oapi.api.drive.v1.model import UploadAllMediaRequestBody, ExportTask as ExportTaskModel
 from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextElement, Image as DocxImage, UpdateBlockRequest, ReplaceImageRequest
 
 class FeishuClient:
@@ -12,11 +15,79 @@ class FeishuClient:
         builder = lark.Client.builder() \
             .app_id(app_id) \
             .app_secret(app_secret)
-            
+
         if domain:
             builder.domain(domain)
-            
+
         self.client = builder.build()
+
+    def read_sheet_to_xlsx(self, spreadsheet_token: str, output_path: str) -> None:
+        """Read a Lark spreadsheet via API and write to local xlsx file."""
+        import openpyxl
+
+        def col_to_letter(n: int) -> str:
+            """1-based column index → Excel letter (1→A, 27→AA)."""
+            result = ""
+            while n > 0:
+                n, rem = divmod(n - 1, 26)
+                result = chr(65 + rem) + result
+            return result
+
+        # Get tenant access token for raw v2 HTTP calls
+        token = TokenManager.get_self_tenant_token(self.client._config)
+        base_url = self.client._config.domain or "https://open.feishu.cn"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Query sheet list
+        req = QuerySpreadsheetSheetRequest.builder() \
+            .spreadsheet_token(spreadsheet_token).build()
+        resp = self.client.sheets.v3.spreadsheet_sheet.query(req)
+        if not resp.success():
+            raise RuntimeError(f"Failed to query sheets (code={resp.code}): {resp.msg}")
+
+        sheets = resp.data.sheets or []
+        print(f"Found {len(sheets)} sheet(s).")
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # remove default blank sheet
+
+        for sheet in sheets:
+            if sheet.hidden:
+                print(f"  Skipping hidden sheet '{sheet.title}'.")
+                continue
+            ws = wb.create_sheet(title=sheet.title or sheet.sheet_id)
+
+            gp = sheet.grid_properties
+            row_count = (gp.row_count if gp and gp.row_count else 1000)
+            col_count = (gp.column_count if gp and gp.column_count else 26)
+
+            range_str = f"{sheet.sheet_id}!A1:{col_to_letter(col_count)}{row_count}"
+            url = f"{base_url}/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{range_str}"
+            print(f"  Reading sheet '{sheet.title}' ({row_count}r × {col_count}c)...")
+
+            r = requests.get(url, headers=headers)
+            data = r.json()
+            if data.get("code") != 0:
+                print(f"  Warning: failed to read sheet '{sheet.title}': {data.get('msg')}")
+                continue
+
+            values = data.get("data", {}).get("valueRange", {}).get("values") or []
+            for row_idx, row in enumerate(values, 1):
+                for col_idx, cell_val in enumerate(row, 1):
+                    if cell_val is None or cell_val == "":
+                        continue
+                    # Rich objects (e.g. @mention): extract display text
+                    if isinstance(cell_val, dict):
+                        cell_val = cell_val.get("text") or cell_val.get("name") or str(cell_val)
+                    elif isinstance(cell_val, list):
+                        cell_val = " ".join(
+                            (v.get("text") or v.get("name") or str(v)) if isinstance(v, dict) else str(v)
+                            for v in cell_val
+                        )
+                    ws.cell(row=row_idx, column=col_idx, value=cell_val)
+
+        wb.save(output_path)
+        print(f"Saved {len(sheets)} sheet(s) to {output_path}.")
 
     def download_media(self, file_token):
         request = DownloadMediaRequest.builder() \
@@ -46,6 +117,46 @@ class FeishuClient:
             return response.data.tmp_download_urls[0].tmp_download_url
             
         return None
+
+    def export_xlsx(self, obj_token: str, obj_type: str, output_path: str) -> None:
+        """Export a Lark document (e.g. sheet) to a local file via the Drive Export Task API."""
+        # Phase 1: Create export task
+        task_body = ExportTaskModel.builder() \
+            .token(obj_token).type(obj_type).file_extension("xlsx").build()
+        create_req = CreateExportTaskRequest.builder().request_body(task_body).build()
+        create_resp = self.client.drive.v1.export_task.create(create_req)
+        if not create_resp.success():
+            raise RuntimeError(f"Failed to create export task (code={create_resp.code}): {create_resp.msg}")
+        ticket = create_resp.data.ticket
+        print(f"Export task created. Ticket: {ticket}")
+
+        # Phase 2: Poll until done
+        file_token = None
+        for attempt in range(30):
+            time.sleep(2)
+            get_req = GetExportTaskRequest.builder().ticket(ticket).token(obj_token).build()
+            get_resp = self.client.drive.v1.export_task.get(get_req)
+            if not get_resp.success():
+                raise RuntimeError(f"Failed to poll export task (code={get_resp.code}): {get_resp.msg}")
+            result = get_resp.data.result
+            print(f"  Poll {attempt + 1}/30: job_status={result.job_status}")
+            if result.job_status == 1:
+                file_token = result.file_token
+                break
+            if result.job_status == 2:
+                raise RuntimeError(f"Export task failed: {result.job_error_msg}")
+        else:
+            raise RuntimeError(f"Export task timed out after 30 attempts (ticket={ticket})")
+
+        # Phase 3: Download and write
+        dl_req = DownloadExportTaskRequest.builder().file_token(file_token).build()
+        dl_resp = self.client.drive.v1.export_task.download(dl_req)
+        if not dl_resp.success():
+            raise RuntimeError(f"Failed to download export file (code={dl_resp.code}): {dl_resp.msg}")
+        data = dl_resp.file.read()
+        with open(output_path, "wb") as f:
+            f.write(data)
+        print(f"Downloaded {len(data)} bytes.")
 
     def upload_media(self, file_path, parent_node):
         """Upload a local image to Lark Drive for embedding in a document.

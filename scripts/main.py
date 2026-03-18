@@ -19,43 +19,72 @@ def main():
 
     parser = argparse.ArgumentParser(description="Convert Feishu Wiki to/from Markdown")
     parser.add_argument("token", help="The wiki token or URL (Source for export, Target for import)")
-    parser.add_argument("--output", "-o", help="Output file path (for export)", default="output.md")
+    parser.add_argument("--output", "-o", help="Output file path (for export)", default=None)
     parser.add_argument("--import-file", "-i", help="Input markdown file path (enable import mode)")
+    parser.add_argument("--format", choices=["md", "xlsx"], default=None,
+                        help="Export format. Default: 'xlsx' for sheet, 'md' for docx.")
     
     args = parser.parse_args()
     
     token = args.token
     domain = None
-    
+    direct_obj_type = None  # set when URL directly encodes the object type
+
     # Extract token if full URL is provided
     if "feishu.cn" in token or "larksuite.com" in token:
         if "larksuite.com" in token:
             domain = lark_oapi.LARK_DOMAIN
         elif "feishu.cn" in token:
             domain = lark_oapi.FEISHU_DOMAIN
-            
-        # Example: https://sample.feishu.cn/wiki/wikcnAbc123Def456
+
+        # Detect direct document URLs (not wiki), e.g. /sheets/TOKEN or /docx/TOKEN
+        for doc_type in ("sheets", "docx", "docs", "base"):
+            if f"/{doc_type}/" in token:
+                direct_obj_type = {"sheets": "sheet", "docx": "docx", "docs": "docx", "base": "base"}.get(doc_type, doc_type)
+                break
+
         token = token.split("/")[-1]
         # Remove query parameters if any
         if "?" in token:
             token = token.split("?")[0]
-            
-    print(f"Processing Wiki Token: {token}")
-    
+
+    print(f"Processing Token: {token}")
+
     try:
         client = FeishuClient(app_id, app_secret, domain=domain)
+
+        if direct_obj_type:
+            # Direct URL: token IS the obj_token, type is known from URL path
+            obj_type = direct_obj_type
+            obj_token = token
+            title = token
+            print(f"Direct document URL detected. Type: {obj_type}, Token: {obj_token}")
+        else:
+            # 1. Get Node Info via wiki lookup
+            print("Fetching node info...")
+            node = client.get_wiki_node_info(token)
+            obj_type = node.obj_type
+            obj_token = node.obj_token
+            title = node.title
+            print(f"Found Node: {title} (Type: {obj_type})")
         
-        # 1. Get Node Info to find the real object token and type
-        print("Fetching node info...")
-        node = client.get_wiki_node_info(token)
-        
-        obj_type = node.obj_type
-        obj_token = node.obj_token
-        title = node.title
-        
-        print(f"Found Node: {title} (Type: {obj_type})")
-        
-        if obj_type != "docx":
+        # Determine effective format
+        if args.format is not None:
+            effective_format = args.format
+        elif obj_type == "sheet":
+            effective_format = "xlsx"
+        else:
+            effective_format = "md"
+
+        # XLSX EXPORT MODE
+        if effective_format == "xlsx" and not args.import_file:
+            output_path = args.output or "output.xlsx"
+            print(f"Exporting '{title}' as xlsx to '{output_path}'...")
+            client.read_sheet_to_xlsx(obj_token, output_path)
+            print(f"Successfully saved to {output_path}")
+            return
+
+        if obj_type != "docx" and effective_format == "md":
             print(f"Warning: Object type is '{obj_type}'. This tool is optimized for 'docx'.")
 
         # IMPORT MODE
@@ -176,7 +205,7 @@ def main():
             md_content = converter.convert()
             
             # 4. Save
-            output_path = args.output
+            output_path = args.output or "output.md"
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(md_content)
                 
