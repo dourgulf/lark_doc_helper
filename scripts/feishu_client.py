@@ -9,6 +9,7 @@ from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, GetDocumentBlockChil
 from lark_oapi.api.drive.v1 import DownloadMediaRequest, BatchGetTmpDownloadUrlMediaRequest, UploadAllMediaRequest, CreateExportTaskRequest, GetExportTaskRequest, DownloadExportTaskRequest
 from lark_oapi.api.drive.v1.model import UploadAllMediaRequestBody, ExportTask as ExportTaskModel
 from lark_oapi.api.docx.v1.model import Block, Text, TextRun, TextElement, Image as DocxImage, UpdateBlockRequest, ReplaceImageRequest
+from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 
 class FeishuClient:
     def __init__(self, app_id, app_secret, domain=None):
