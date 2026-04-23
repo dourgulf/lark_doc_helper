@@ -19,14 +19,14 @@ CODE_LANGUAGE_MAP = {
     "vbscript": 65, "visualbasic": 66, "xml": 67, "yaml": 68,
 }
 
-# Placeholder for Mermaid Component Type ID
-MERMAID_COMPONENT_TYPE_ID = os.getenv("MERMAID_COMPONENT_TYPE_ID") 
-
 class MarkdownToLarkConverter:
     def __init__(self, markdown_content, mermaid_component_id=None, image_uploader=None):
         self.markdown_content = markdown_content
         self.blocks = []
-        self.mermaid_component_id = mermaid_component_id or MERMAID_COMPONENT_TYPE_ID
+        self.mermaid_component_id = (
+            mermaid_component_id
+            or os.getenv("MERMAID_COMPONENT_TYPE_ID")
+        )
         # image_uploader kept for API compatibility but no longer used internally
         self.md = MarkdownIt('commonmark').enable('table').enable('strikethrough')
         
