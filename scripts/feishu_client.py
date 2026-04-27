@@ -362,15 +362,16 @@ class FeishuClient:
             if not page_token:
                 break
 
-        # Check for missing content in table cells
-        # We need to iteratively fetch missing content because the hierarchy is deep:
-        # Table (31) -> Row (32) -> Cell (33) -> Content (2, etc.)
-        # ListDocumentBlockRequest might return Table and Rows, but not Cells, or Cells but not Content.
+        # Ensure Table Cell (32) blocks have their content children fetched.
+        # Official API structure: Table(31) → Cell(32) → Content(2/12/13/…)
+        # There is no "Table Row" type. The list endpoint may omit cell content
+        # on the first page; extra passes fetch it on demand.
+        # type 33 = View Block — unrelated to table cells, no special handling needed.
         
         processed_ids = set()
         
-        # Max 3 passes to handle depth
-        for pass_index in range(3):
+        # Max 2 passes: one for cells missing content, one safety pass
+        for pass_index in range(2):
             # Re-build parent map from current blocks
             parent_map = {}
             for b in blocks:
@@ -382,15 +383,8 @@ class FeishuClient:
             missing_content_blocks = []
             
             for b in blocks:
-                # Table Row (32) should have children (Cells 33)
-                if b.block_type == 32: 
-                    children = parent_map.get(b.block_id, [])
-                    if not children:
-                        if b.block_id not in processed_ids:
-                            missing_content_blocks.append(b.block_id)
-
-                # Table Cell (33) should have children (Content)
-                elif b.block_type == 33: 
+                # Table Cell (32) must have content children
+                if b.block_type == 32:
                     children = parent_map.get(b.block_id, [])
                     if not children:
                         if b.block_id not in processed_ids:
@@ -568,18 +562,18 @@ class FeishuClient:
     def create_table(self, document_id, parent_id, table_block, content_rows):
         """
         Creates a table and then populates it with content.
-        This is a workaround because creating a deep table structure (Table->Rows->Cells->Content)
-        in a single call fails with validation errors.
+
+        Official API structure: Table(31) → Cell(32) → Content(2/12/…)
+        There is no "Row" block type. When a Table is created the API auto-generates
+        Cell(32) blocks as direct children. We create the empty frame first, then fill
+        each Cell with the matching content from content_rows.
+
+        content_rows layout (from MarkdownToLarkConverter):
+            content_rows[r]           – a Row placeholder block
+            content_rows[r].children  – list of Cell placeholder blocks (one per column)
+            cell.children             – list of Content blocks for that cell
         """
-        # 1. Create the table frame (without children, but with row_size/col_size)
-        # We assume table_block already has children removed or we remove them here just in case.
-        # But table_block is a Block object.
-        
-        # We need to make sure we don't send children.
-        # But SDK Block object doesn't have a way to unset children easily if built?
-        # Actually, we modified markdown_to_lark.py to NOT add children.
-        
-        # Create the table block
+        # 1. Create the empty table frame
         created_blocks = self.create_blocks(document_id, parent_id, [table_block])
         if not created_blocks:
             raise Exception("Failed to create table block")
@@ -589,28 +583,15 @@ class FeishuClient:
         
         print(f"Created Table {table_id}. Now populating content...")
         
-        # 2. Fetch the created structure (Rows and Cells)
-        # We need to get the rows first.
+        # 2. Fetch the Cell(32) blocks auto-created by the API (direct children of Table)
         try:
-            rows = self._fetch_block_children(document_id, table_id)
+            all_target_cells = self._fetch_block_children(document_id, table_id)
         except Exception as e:
-             # Retry fetch
-             print(f"Error fetching table rows: {e}. Retrying...")
-             time.sleep(1)
-             rows = self._fetch_block_children(document_id, table_id)
+            print(f"Error fetching table cells: {e}. Retrying...")
+            time.sleep(1)
+            all_target_cells = self._fetch_block_children(document_id, table_id)
         
-        # Strategy: Flatten both source content and target structure to match cells linearly.
-        # This handles cases where Lark API creates a different structure (e.g. 8x1 instead of 4x2)
-        # but total cell count is consistent.
-        
-        # Flatten target cells
-        all_target_cells = []
-        for row in rows:
-            # Fetch cells for this row
-            cells = self._fetch_block_children(document_id, row.block_id)
-            all_target_cells.extend(cells)
-            
-        # Flatten source content cells
+        # 3. Flatten source content: content_rows[r].children[c].children = content blocks
         all_content_cells = []
         for content_row in content_rows:
             all_content_cells.extend(content_row.children)

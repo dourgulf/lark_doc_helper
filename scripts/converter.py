@@ -139,75 +139,41 @@ class MarkdownConverter:
             else:
                 content = f"![Image]({token})"
         elif b_type == 31: # Table
-            # Handle Table block
-            col_size = block.table.property.column_size if block.table and block.table.property else 0
-            rows = self.children_map.get(block.block_id, [])
+            # Official API structure (docx-v1):
+            #   Table (31) → Cell (32) → Content (2/12/13/...)
+            # There is NO "Table Row" block type. Cells are direct children of
+            # the Table, stored in row-major order in block.table.cells.
+            # block type 33 = View Block (not a table cell).
+            tprop = block.table.property if block.table else None
+            col_size = (tprop.column_size if tprop and tprop.column_size else 0)
             table_lines = []
-            
-            current_row_cells = []
-            current_width = 0
             is_first_row = True
-            
-            for row in rows:
-                # Get children of the row (Cells or direct Content)
-                row_children = self.children_map.get(row.block_id, [])
-                
-                for child in row_children:
-                    # Extract cell content and span
-                    span = 1
-                    cell_text = ""
-                    
-                    # Check if this child acts as a container (Cell)
-                    # Note: Sometimes Lark returns Type 2 (Text) blocks as children of Row, 
-                    # which then contain the actual content. We treat anything with children as a container.
-                    cell_children = self.children_map.get(child.block_id, [])
-                    
-                    if child.block_type == 33: # Standard Cell
-                        span = child.table_cell.col_span if child.table_cell else 1
-                        
-                    if cell_children:
-                        # Process content inside the container
-                        cell_text_parts = []
-                        for c in cell_children:
-                            part = self._process_block(c, 0)
-                            if part:
-                                cell_text_parts.append(part)
-                        cell_text = "<br>".join(cell_text_parts).strip().replace("\n", "<br>")
-                    else:
-                        # Direct content (or empty cell)
-                        part = self._process_block(child, 0)
-                        cell_text = part.strip().replace("\n", "<br>") if part else ""
 
-                    # Add to buffer
-                    current_row_cells.append(cell_text)
-                    
-                    # Handle merged cells (colspan)
-                    for _ in range(span - 1):
-                        current_row_cells.append("")
-                    
-                    current_width += span
-                    
-                    # Check if row is full
-                    if col_size > 0 and current_width >= col_size:
-                        # Flush row
-                        table_lines.append("| " + " | ".join(current_row_cells) + " |")
-                        
-                        # Add separator after header (first logical row)
-                        if is_first_row:
-                            cols = len(current_row_cells)
-                            table_lines.append("| " + " | ".join(["---"] * cols) + " |")
-                            is_first_row = False
-                        
-                        current_row_cells = []
-                        current_width = 0
-            
-            # Flush any remaining cells (if table structure is imperfect)
-            if current_row_cells:
-                 table_lines.append("| " + " | ".join(current_row_cells) + " |")
-                 if is_first_row:
-                    cols = len(current_row_cells)
-                    table_lines.append("| " + " | ".join(["---"] * cols) + " |")
-            
+            # Get cells in the guaranteed row-major order from .cells array.
+            # Fall back to children_map only when .cells is absent (older SDK).
+            cells_ids = (block.table.cells if block.table else None) or []
+            if cells_ids:
+                ordered_cells = [self.block_map[cid] for cid in cells_ids
+                                 if cid in self.block_map]
+            else:
+                ordered_cells = self.children_map.get(block.block_id, [])
+
+            def _cell_text(cell_block):
+                kids = self.children_map.get(cell_block.block_id, [])
+                parts = [p for p in (self._process_block(c, 0) for c in kids) if p]
+                return "<br>".join(parts).replace("\n", "<br>")
+
+            for i in range(0, len(ordered_cells), col_size if col_size else 1):
+                chunk = ordered_cells[i:i + (col_size if col_size else 1)]
+                row_cells = [_cell_text(c) for c in chunk]
+                if col_size and len(row_cells) < col_size:
+                    row_cells.extend([""] * (col_size - len(row_cells)))
+                if row_cells:
+                    table_lines.append("| " + " | ".join(row_cells) + " |")
+                    if is_first_row:
+                        table_lines.append("| " + " | ".join(["---"] * len(row_cells)) + " |")
+                        is_first_row = False
+
             content = "\n".join(table_lines)
         elif b_type == 34: # Synced Block
             # Synced Block is a container, process its children

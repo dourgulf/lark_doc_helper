@@ -155,22 +155,14 @@ class MarkdownToLarkConverter:
             elif token.type == 'tr_open':
                 current_row_cells = []
             elif token.type == 'tr_close':
-                # Create Row Block
                 if not col_count:
                     col_count = len(current_row_cells)
-                
-                # Build Row Block with Children (Cells)
-                # Note: We will attach this to the Table block for post-processing, 
-                # but we won't send it in the initial create call.
+                # Row placeholder: block_type is arbitrary here (never sent to API).
+                # create_table uses .children to get the per-cell content lists.
                 row_block = Block.builder().block_type(32).children(current_row_cells).build()
-                # Manually set table_row property since SDK might be missing TableRow class or builder support
-                # This is required for Type 32 blocks.
-                row_block.table_row = {}
-                
                 rows.append(row_block)
                 
             elif token.type == 'th_open' or token.type == 'td_open':
-                # Find content
                 inline_token = None
                 j = i + 1
                 while j < len(tokens):
@@ -181,13 +173,12 @@ class MarkdownToLarkConverter:
                         break
                     j += 1
 
-                # Split cell content into blocks (text and image placeholders)
+                # Cell placeholder: never sent to API directly.
+                # create_table uses .children (= cell_content_blocks) to fill the real Cell(32).
                 cell_content_blocks = self._process_cell_content(inline_token)
-
                 cell_block = Block.builder().block_type(33).table_cell(
                     TableCell.builder().build()
                 ).children(cell_content_blocks).build()
-
                 current_row_cells.append(cell_block)
                 
             i += 1
@@ -207,7 +198,6 @@ class MarkdownToLarkConverter:
             for row in rows:
                 truncated_cells = (row.children or [])[:MAX_COLUMNS]
                 new_row = Block.builder().block_type(32).children(truncated_cells).build()
-                new_row.table_row = {}
                 truncated_rows.append(new_row)
             rows = truncated_rows
             col_count = MAX_COLUMNS
@@ -377,8 +367,11 @@ class MarkdownToLarkConverter:
             builder.inline_code(True)
             has_style = True
         if style_dict['link']:
-            builder.link(Link.builder().url(style_dict['link']).build())
-            has_style = True
+            url = style_dict['link']
+            # Lark API only accepts absolute http(s) URLs; skip relative/file paths
+            if url.startswith("http://") or url.startswith("https://"):
+                builder.link(Link.builder().url(url).build())
+                has_style = True
             
         return builder.build() if has_style else None
 
